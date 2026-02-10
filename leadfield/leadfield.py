@@ -29,10 +29,10 @@ class ChannelLocation:
     """Channel type"""
     
     urchan: int = 0
-    """Original channel index"""
+    """Original channel index (before removing the channel)"""
     
     ref: str = ''
-    """Reference channel"""
+    """Reference channel (e.g. for re-referencing)"""
     
     def to_dict(self) -> Dict:
         """Convert to dictionary (EEGLAB-compatible format)"""
