@@ -1,7 +1,8 @@
 
 from dataclasses import dataclass, field
-from typing import Optional, List, Dict, Tuple
+from typing import Optional, List, Dict, Tuple, Union
 import numpy as np
+import re
 from pathlib import Path
 
 @dataclass
@@ -264,15 +265,67 @@ class LeadField:
             unit=f'{self.unit}_normalized_{method}',
             metadata=self.metadata.copy()
         )
-    
-    def get_sources_in_region(self, region_names: List[str]) -> np.ndarray:
+        
+    def get_regions(self, cats : List[str] = {'brain', 'eye', 'muscle'}) -> Tuple[np.ndarray, np.ndarray, Dict[str, int]]:
         """
-        Get indices of sources in specified anatomical regions.
+        Return a tuple of generic region categories present in the leadfield's atlas
+        as well as a list of unique regions with the respective counters.
         
         Parameters
         ----------
-        region_names : List[str]
-            List of region names to search for (case-insensitive).
+        cats : List[str]
+            List of region categories to search for (case-insensitive).
+            
+        Returns
+        -------
+        Tuple[np.ndarray, np.ndarray, Dict[str, int]] where:
+            allregions ()- cell of strings listing all unique regions present in
+                        the atlas
+            numall - numeric list indicating how many sources are present in
+                    each of the regions in the allregions list
+            generic_counts 
+            Dictionary of counts for each generic category in cats.
+            Array of source indices in the specified regions.
+            
+        Raises
+        ------
+        ValueError
+            If no atlas is available.
+            
+        Examples
+        --------       
+        """
+        if self.atlas is None:
+            raise ValueError("No atlas available for this lead field")
+        
+        atlas = np.asarray(self.atlas, dtype=np.str_)
+        
+        allregions, numall = np.unique(atlas, return_counts=True)
+        
+        lower = np.char.lower(atlas)
+        generic_counts = {}
+        
+        for c in cats:
+            mask = np.char.startswith(lower, c)
+            generic_counts[c] = np.sum(mask)
+        
+        return allregions, numall, generic_counts
+        
+    def get_source_all(self, region : Union[List[str], str] = '.*') ->np.ndarray: # alias of get_sources_in_region
+        if isinstance(region, str):
+            region = [region]
+        return self.get_sources_in_region(region_patterns=region)
+        
+    def get_sources_in_region(self, region_patterns: Union[List[str], str]) -> np.ndarray:
+        """
+        Get indices of sources in specified anatomical regions. 
+        If multiple region patterns match multiple sources in the atlas, all matchin sources indices are returned.
+        If none of the region patterns match any source in the atlas, an empty array is returned. 
+        
+        Parameters
+        ----------
+        region_patterns : List[str]
+            List of region patterns to search for (case-insensitive).
             
         Returns
         -------
@@ -290,18 +343,33 @@ class LeadField:
         >>> # Get all sources in visual cortex
         >>> sources = lf.get_sources_in_region(['Visual_Cortex'])
         """
+        if isinstance(region_patterns, str):
+            region_patterns = [region_patterns]
+        if region_patterns is None:
+            region_patterns = ['.*'] # matchinig all regions
         if self.atlas is None:
             raise ValueError("No atlas available for this lead field")
         
-        indices = []
-        region_names_lower = [r.lower() for r in region_names]
+        allregions, _, _, _ = self.get_regions()
+        idx = np.zeros(len(self.atlas), dtype=bool)
         
-        for i, label in enumerate(self.atlas):
-            label_lower = label.lower()
-            if any(region in label_lower for region in region_names_lower):
-                indices.append(i)
+        for region in region_patterns:
+            if region in allregions:
+                region = re.escape(region)
+                region = f'^{region}$'
+                print(f'Assuming exact match: {region}')
+                
+            matches = np.array([bool(re.search(region, entry, re.IGNORECASE)) for entry in self.atlas])
+            idx = idx | matches
+        return np.nonzero(idx)[0]
+    
+    def get_source_random(self, number: int = 1, region_patterns: List[str] = '.*') -> np.ndarray:
         
-        return np.array(indices, dtype=int)
+        region_idxs = self.get_source_all(region=region_patterns)
+        if len(region_idxs) == 0:
+            return np.array([], dtype=int)
+        return np.random.choice(region_idxs, size=min(number, len(region_idxs)), replace=False)
+        
     
     def to_dict(self) -> Dict:
         """Convert lead field to dictionary for serialization."""
