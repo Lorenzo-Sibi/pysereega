@@ -402,7 +402,7 @@ class LeadField:
         if self.atlas is None:
             raise ValueError("No atlas available for this lead field")
         
-        allregions, _, _, = self.get_regions()
+        allregions, _, _ = self.get_regions()
         idx = np.zeros(len(self.atlas), dtype=bool)
         
         for region in region_patterns:
