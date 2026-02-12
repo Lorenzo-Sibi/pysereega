@@ -28,7 +28,8 @@ from .leadfield import LeadField, ChannelLocation
 # MATLAB loaders (require pre-downloaded data)
 from .nyhead import (
     lf_generate_from_nyhead,
-    NYHEAD_LEADFIELD_PATH
+    NYHEAD_LEADFIELD_PATH,
+    NYHEAD_WORKING_DIR
 )
 
 
