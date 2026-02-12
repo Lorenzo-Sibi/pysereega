@@ -3,6 +3,7 @@ from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Tuple, Union
 import numpy as np
 import re
+import warnings
 from pathlib import Path
 
 @dataclass
@@ -169,22 +170,39 @@ class LeadField:
         return [ch.labels for ch in self.chanlocs]
     
     def get_projection(self, 
-                      source_idx: int, 
-                      orientation: Optional[np.ndarray] = None) -> np.ndarray:
+                      source_idx: Union[int, np.ndarray, List[int]], 
+                      orientation: Optional[np.ndarray] = None,
+                      normalize_leadfield: bool = False,
+                      normalize_orientation : bool = False
+        ) -> np.ndarray:
         """
-        Get the projection pattern for a source with given orientation.
+        Get the projection pattern for source(s) with given orientation.
+        
+        Returns the (oriented) projection matrix of given source(s) in the 
+        leadfield, using the optionally given orientation and normalization 
+        arguments.
         
         Parameters
         ----------
-        source_idx : int
-            Index of the source (0 to n_sources-1).
+        source_idx : int, np.ndarray, or List[int]
+            Single source index or array of source indices (0 to n_sources-1).
+            If array, the mean projection of all sources will be returned.
         orientation : np.ndarray, optional
-            Dipole orientation [x, y, z]. If None, uses default orientation.
+            Dipole orientation(s) [x, y, z]. If None, uses default orientation 
+            from the leadfield. Shape can be:
+            - (3,) for single orientation applied to all sources
+            - (n_sources, 3) for individual orientations per source
+        normalize_leadfield : bool, default=False
+            Whether to normalize the leadfield before projecting to have the 
+            most extreme value be either 1 or -1, depending on its sign.
+        normalize_orientation : bool, default=False
+            Whether to normalize the orientation vector(s) as above.
             
         Returns
         -------
         np.ndarray
-            Projection pattern of shape (n_channels,).
+            Projection pattern of shape (n_channels,) representing the 
+            topographic distribution on the scalp.
             
         Examples
         --------
@@ -194,25 +212,57 @@ class LeadField:
         >>> 
         >>> # Get projection with custom orientation (anterior-posterior)
         >>> proj = lf.get_projection(100, orientation=[0, 1, 0])
+        >>> 
+        >>> # Get mean projection from multiple sources
+        >>> proj = lf.get_projection([100, 101, 102])
+        >>> 
+        >>> # Multiple sources with individual orientations
+        >>> orientations = np.array([[1, 0, 0], [0, 1, 0], [0, 0, 1]])
+        >>> proj = lf.get_projection([100, 101, 102], orientation=orientations)
         """
-        if source_idx < 0 or source_idx >= self.n_sources:
-            raise ValueError(
-                f"Source index {source_idx} out of range [0, {self.n_sources})"
-            )
+        
+        source_idx = np.atleast_1d(source_idx)
+        n_sources = source_idx.shape[0]
+        
+        if np.any(source_idx < 0) or np.any(source_idx >= self.n_sources):
+            raise ValueError(f"Source index out of range [0, {self.n_sources}). Got: {source_idx}")
+        if source_idx.ndim > 1:
+            raise ValueError(f"Source index must be 1D array, list or scalar. Got shape: {source_idx.shape}")
         
         if orientation is None:
-            orientation = self.orientation[source_idx]
+            orientation = self.orientation[source_idx] # (n_sources, 3)
         else:
-            orientation = np.asarray(orientation)
-            if orientation.shape != (3,):
-                raise ValueError(
-                    f"Orientation must be shape (3,), got {orientation.shape}"
-                )
+            orientation = np.atleast_2d(orientation)
+            
+            if orientation.shape[0] == 1 and n_sources > 1:
+                warnings.warn(
+                    f'Only one orientation indicated for {n_sources} sources; '
+                    f'applying that same orientation to all sources')
+                orientation = np.repeat(orientation, n_sources, axis=0) # tested: 'repeat' is much faster than 'tile'
+            
+        if orientation.shape != (n_sources, 3):
+            raise ValueError(
+            f"Orientation shape {orientation.shape} doesn't match "
+            f"expected ({n_sources}, 3)")
+                    
+        # Extract leadfield for this source: (n_channels, 3)
+        lf_sources = self.leadfield[:, source_idx, :].copy()
         
-        # Linear combination of X, Y, Z projections weighted by orientation
-        projection = self.leadfield[:, source_idx, :] @ orientation
+        if normalize_leadfield:
+            max_vals = np.abs(lf_sources).max(axis=(0, 2), keepdims=True)
+            lf_sources = np.where(max_vals > 0, lf_sources / max_vals, lf_sources)
+
+        if normalize_orientation:
+            max_vals = np.abs(orientation).max(axis=1, keepdims=True)
+            orientation = np.where(max_vals > 0, orientation / max_vals, orientation)
         
-        return projection
+        # Vectorized projection computation using Einstein summations
+        # This is the core operation and is highly optimized
+        # lf_sources: (n_channels, n_sources, 3) and orientation: (n_sources, 3)
+        # -> result: (n_channels, n_sources)
+        projections = np.einsum('ijk,jk->ij', lf_sources, orientation)
+    
+        return projections.mean(axis=1) if n_sources > 1 else projections[:, 0]
     
     def normalize(self, method: str = 'norm') -> 'LeadField':
         """
