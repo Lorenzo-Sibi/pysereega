@@ -361,12 +361,12 @@ class LeadField:
         
         return allregions, numall, generic_counts
         
-    def get_source_all(self, region : Union[List[str], str] = '.*') ->np.ndarray: # alias of get_sources_in_region
+    def get_source_all(self, region : Union[List[str], np.ndarray, str] = '.*') ->np.ndarray: # alias of get_sources_in_region
         if isinstance(region, str):
             region = [region]
         return self.get_sources_in_region(region_patterns=region)
         
-    def get_sources_in_region(self, region_patterns: Union[List[str], str]) -> np.ndarray:
+    def get_sources_in_region(self, region_patterns: Union[List[str], np.ndarray, str]) -> np.ndarray:
         """
         Get indices of sources in specified anatomical regions. 
         If multiple region patterns match multiple sources in the atlas, all matchin sources indices are returned.
@@ -393,6 +393,8 @@ class LeadField:
         >>> # Get all sources in visual cortex
         >>> sources = lf.get_sources_in_region(['Visual_Cortex'])
         """
+        if (not isinstance(region_patterns, str)) and (not isinstance(region_patterns, np.ndarray)) and (not isinstance(region_patterns, list)):
+            raise ValueError("'region_patterns' attribute should be string, list or np.ndarray of strings.")
         if isinstance(region_patterns, str):
             region_patterns = [region_patterns]
         if region_patterns is None:
@@ -412,6 +414,267 @@ class LeadField:
             matches = np.array([bool(re.search(region, entry, re.IGNORECASE)) for entry in self.atlas])
             idx = idx | matches
         return np.nonzero(idx)[0]
+    
+    def get_source_inradius(self, 
+                            centre: Union[List[float], np.ndarray], 
+                            radius: float, 
+                            region: Union[List[str], np.ndarray, str] = '.*'
+        ) -> np.ndarray:
+        """
+        Get sources within a certain radius of an indicated source or coordinate.
+        
+        Returns the source(s) in the leadfield within a certain radius of
+        an indicated source or coordinate.
+        
+        Parameters
+        ----------
+        centre : Union[List[float], np.ndarray, int]
+            Either:
+            - 1D array/list of [x, y, z] coordinates in mm (MNI coordinates)
+            - Single integer representing a source index
+        radius : float
+            The radius in which to search, in mm
+        region : Union[List[str], np.ndarray, str], optional
+            Region pattern(s) to filter sources. Default '.*' matches all regions.
+            Can be a single pattern string, or list of patterns.
+            
+        Returns
+        -------
+        np.ndarray
+            Array of source indices within the indicated area (radius)
+            
+        Raises
+        ------
+        ValueError
+            If centre is not a valid source index or 3D coordinate.
+            If no atlas is available when region filtering is requested.
+            
+        Examples
+        --------
+        >>> lf = lf_generate_from_nyhead()
+        >>> # Get sources within 10mm of coordinate [0, 0, 0]
+        >>> sources = lf.get_source_inradius([0, 0, 0], 10)
+        >>> 
+        >>> # Get sources within 15mm of source index 100
+        >>> sources = lf.get_source_inradius(100, 15)
+        >>> 
+        >>> # Get sources in visual cortex within 10mm of a point
+        >>> sources = lf.get_source_inradius([0, -50, 0], 10, region='Visual')
+        >>> 
+        >>> # Multiple region patterns
+        >>> sources = lf.get_source_inradius([0, 0, 0], 20, region=['Motor', 'Sensory'])
+        
+        Notes
+        -----
+        This function uses Euclidean distance in 3D space to determine which
+        sources fall within the specified radius. The coordinate system follows
+        MNI conventions (typically X=left-right, Y=posterior-anterior, 
+        Z=inferior-superior).
+        """
+        region_idx = self.get_sources_in_region(region_patterns=region)
+        
+        if len(region_idx) == 0:
+            return np.array([], dtype=int)
+    
+        centre = np.atleast_1d(centre)
+        
+        if centre.size == 1:
+            # Single index - get coordinates from that source
+            source_idx = int(centre[0])
+            if source_idx < 0 or source_idx >= self.n_sources:
+                raise ValueError(
+                    f"One value provided for centre. Interpreting centre as source index"
+                    f"Source index {source_idx} out of range [0, {self.n_sources})")
+            centre = self.pos[source_idx, :]
+        elif centre.size == 3:
+            centre = centre.flatten()
+        else:
+            raise ValueError(
+                f"Centre must be either a single source index or [x, y, z] coordinates. "
+                f"Got array with {centre.size} elements")
+        
+        # Calculate Euclidean distances for sources in region
+        # Vectorized computation (much faster than MATLAB loop)
+        # pos shape: (n_sources, 3), centre shape: (3,)
+        positions = self.pos[region_idx, :]  # (n_region_sources, 3)
+        
+        # Euclidean distance: sqrt((x1-x2)^2 + (y1-y2)^2 + (z1-z2)^2)
+        distances = np.sqrt(np.sum((positions - centre)**2, axis=1))
+        
+        # Filter sources within radius
+        within_radius = distances <= radius
+        sources_in_radius = region_idx[within_radius]
+        
+        return sources_in_radius
+        
+    def get_source_nearest(self, pos: Union[List[float], np.ndarray], 
+                      region: Union[List[str], np.ndarray, str] = '.*') -> Tuple[int, float]:
+        """
+        Get the source nearest to the given position.
+        
+        Returns the source in the leadfield nearest to the given position,
+        and its distance from that position. The returned source can
+        optionally be constrained to indicated region(s).
+        
+        Parameters
+        ----------
+        pos : Union[List[float], np.ndarray]
+            1D array/list of [x, y, z] coordinates in mm (MNI coordinates)
+        region : Union[List[str], np.ndarray, str], optional
+            Region pattern(s) to filter sources. Default '.*' matches all regions.
+            Can be a single pattern string, or list of patterns.
+            
+        Returns
+        -------
+        Tuple[int, float]
+            source_idx : int
+                The nearest source index
+            dist : float
+                The distance of the found source to the indicated position (in mm)
+                
+        Raises
+        ------
+        ValueError
+            If pos is not a valid 3D coordinate.
+            If no sources found in specified region(s).
+            
+        Examples
+        --------
+        >>> lf = lf_generate_from_nyhead()
+        >>> # Get source nearest to origin
+        >>> source_idx, distance = lf.get_source_nearest([0, 0, 0])
+        >>> print(f"Source {source_idx} is {distance:.2f} mm from origin")
+        >>> 
+        >>> # Get nearest source in motor cortex to a specific point
+        >>> source_idx, dist = lf.get_source_nearest([20, -10, 60], region='Motor')
+        >>> 
+        >>> # Find nearest source in multiple regions
+        >>> idx, dist = lf.get_source_nearest([0, 0, 0], region=['Brain.*Visual', 'Brain.*Auditory'])
+        
+        Notes
+        -----
+        Uses Euclidean distance in 3D space. Coordinate system follows MNI 
+        conventions (typically X=left-right, Y=posterior-anterior, 
+        Z=inferior-superior).
+        """
+        # Validate and convert pos to numpy array
+        pos = np.atleast_1d(pos).flatten()
+        if pos.size != 3:
+            raise ValueError(
+                f"Position must be [x, y, z] coordinates. "
+                f"Got array with {pos.size} elements"
+            )
+        
+        # Get sources in specified region(s)
+        region_idx = self.get_sources_in_region(region_patterns=region)
+        
+        # Check if any sources found
+        if len(region_idx) == 0:
+            raise ValueError(
+                f"No sources found in region(s): {region}. "
+                f"Cannot find nearest source."
+            )
+        
+        # Calculate Euclidean distances (vectorized)
+        positions = self.pos[region_idx, :]  # (n_region_sources, 3)
+        distances = np.sqrt(np.sum((positions - pos)**2, axis=1))
+        
+        # Find minimum distance and corresponding index
+        min_idx = np.argmin(distances)
+        source_idx = region_idx[min_idx]
+        dist = distances[min_idx]
+        
+        return int(source_idx), float(dist)
+
+
+    def get_source_middle(self, region: Union[List[str], np.ndarray, str] = '.*', 
+                        method: str = 'average') -> int:
+        """
+        Get the source nearest to the middle of indicated region(s).
+        
+        Returns the source nearest to either the average coordinates of all
+        sources in the indicated region(s), or to the average of their
+        boundaries (min/max along each axis).
+        
+        Note: Regardless of method, this may or may not represent an actual
+        geometric 'middle', especially for irregularly shaped regions.
+        
+        Parameters
+        ----------
+        region : Union[List[str], np.ndarray, str], optional
+            Region pattern(s) to search. Default '.*' matches all regions.
+            Can be a single pattern string, or list of patterns.
+        method : str, optional
+            Method to calculate the 'middle'. Options:
+            - 'average' (default): Mean of all source coordinates
+            - 'minmax': Mean of minimum and maximum values along each axis
+            
+        Returns
+        -------
+        int
+            The index of the source nearest to the calculated middle point
+                
+        Raises
+        ------
+        ValueError
+            If fewer than 3 sources found in region (cannot determine middle).
+            If unknown method specified.
+            
+        Examples
+        --------
+        >>> lf = lf_generate_from_nyhead()
+        >>> # Get middle source of entire brain using average method
+        >>> middle = lf.get_source_middle(region='Brain.*')
+        >>> 
+        >>> # Get middle of visual cortex using min-max boundaries
+        >>> middle = lf.get_source_middle(region='Visual', method='minmax')
+        >>> 
+        >>> # Get middle across multiple regions
+        >>> middle = lf.get_source_middle(region=['Motor', 'Sensory'], method='average')
+        
+        Notes
+        -----
+        The 'average' method computes the centroid (mean position) of all sources
+        in the region, then finds the source nearest to that point.
+        
+        The 'minmax' method computes the center of the bounding box by taking
+        the mean of [max(x), max(y), max(z)] and [min(x), min(y), min(z)],
+        then finds the source nearest to that point.
+        """
+        # Get sources in specified region(s)
+        source_indices = self.get_sources_in_region(region_patterns=region)
+        
+        # Check minimum number of sources
+        if len(source_indices) < 3:
+            raise ValueError(
+                f"Cannot determine 'middle' from {len(source_indices)} source(s). "
+                f"At least 3 sources required in region: {region}"
+            )
+        
+        # Get positions of sources in region
+        positions = self.pos[source_indices, :]  # (n_sources, 3)
+        
+        # Calculate middle point based on method
+        if method == 'average':
+            # Mean of all coordinates
+            middle_point = np.mean(positions, axis=0)
+            
+        elif method == 'minmax':
+            # Mean of bounding box (min and max along each axis)
+            max_coords = np.max(positions, axis=0)  # (3,)
+            min_coords = np.min(positions, axis=0)  # (3,)
+            middle_point = np.mean([max_coords, min_coords], axis=0)
+            
+        else:
+            raise ValueError(
+                f"Unknown method '{method}'. "
+                f"Valid options are: 'average', 'minmax'"
+            )
+        
+        # Find source nearest to the calculated middle point
+        source_idx, _ = self.get_source_nearest(middle_point, region=region)
+        
+        return int(source_idx)
     
     def get_source_random(self, number: int = 1, region_patterns: List[str] = '.*') -> np.ndarray:
         
