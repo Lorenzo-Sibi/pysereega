@@ -484,21 +484,41 @@ class LeadField:
         
         if filepath.suffix == '.npz':
             data = np.load(filepath, allow_pickle=True)
+
+            def _unwrap_np_scalar(value):
+                if isinstance(value, np.ndarray) and value.ndim == 0:
+                    return value.item()
+                return value
+
             chanlocs = [
-                ChannelLocation(**ch) for ch in data['chanlocs']
+                ChannelLocation(**_unwrap_np_scalar(ch)) for ch in data['chanlocs']
             ]
-            atlas = list(data['atlas']) if 'atlas' in data else None
-            
+            atlas_raw = _unwrap_np_scalar(data['atlas']) if 'atlas' in data else None
+            if atlas_raw is None:
+                atlas = None
+            elif isinstance(atlas_raw, np.ndarray):
+                atlas = atlas_raw.tolist()
+            else:
+                atlas = list(atlas_raw)
+
+            metadata_raw = _unwrap_np_scalar(data['metadata']) if 'metadata' in data else {}
+            if metadata_raw is None:
+                metadata = {}
+            elif isinstance(metadata_raw, dict):
+                metadata = metadata_raw
+            else:
+                metadata = dict(metadata_raw)
+
             return cls(
                 leadfield=data['leadfield'],
                 pos=data['pos'],
                 orientation=data['orientation'],
                 chanlocs=chanlocs,
                 atlas=atlas,
-                method=str(data.get('method', 'unknown')),
-                source=str(data.get('source', 'unknown')),
-                unit=str(data.get('unit', 'relative')),
-                metadata=dict(data.get('metadata', {}))
+                method=str(_unwrap_np_scalar(data['method']) if 'method' in data else 'unknown'),
+                source=str(_unwrap_np_scalar(data['source']) if 'source' in data else 'unknown'),
+                unit=str(_unwrap_np_scalar(data['unit']) if 'unit' in data else 'relative'),
+                metadata=metadata
             )
             
         elif filepath.suffix == '.mat':
