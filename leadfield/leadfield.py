@@ -393,7 +393,7 @@ class LeadField:
         >>> # Get all sources in visual cortex
         >>> sources = lf.get_sources_in_region(['Visual_Cortex'])
         """
-        if (not isinstance(region_patterns, str)) and (not isinstance(region_patterns, np.ndarray)) and (not isinstance(region_patterns, list)):
+        if not any([isinstance(region_patterns, str), isinstance(region_patterns, np.ndarray), isinstance(region_patterns, list)]):
             raise ValueError("'region_patterns' attribute should be string, list or np.ndarray of strings.")
         if isinstance(region_patterns, str):
             region_patterns = [region_patterns]
@@ -676,7 +676,7 @@ class LeadField:
         
         return int(source_idx)
     
-    def get_source_random(self, number: int = 1, region_patterns: Union[List[str], str] = '.*') -> np.ndarray:
+    def get_source_random(self, number: int = 1, region_patterns: List[str] = '.*') -> np.ndarray:
         
         region_idxs = self.get_source_all(region=region_patterns)
         if len(region_idxs) == 0:
