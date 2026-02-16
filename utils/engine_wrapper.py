@@ -58,17 +58,17 @@ class EngineWrapper():
                 pass
 
 class TempWD():
-    """context manager to temporarily switch cwd to `dir_path` 
+    """context manager to temporarily switch cwd to `dir_path`
     (https://gist.github.com/ganileni/c32a2fe0df8ffcd02b0c451c55e63c95#file-wrapping-ipynb)"""
-    
+
     def __init__(self, dir_path):
-        self.cwd = Path.cwd()
         self.dir_path = Path(dir_path)
-        os.chdir(self.dir_path.resolve())
-        
+
     def __enter__(self):
-        return None
-    
+        self.cwd = Path.cwd()
+        os.chdir(self.dir_path.resolve())
+        return self
+
     def __exit__(self, type, value, traceback):
         os.chdir(self.cwd.resolve())
 

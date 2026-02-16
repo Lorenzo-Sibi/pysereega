@@ -316,7 +316,7 @@ class LeadField:
             metadata=self.metadata.copy()
         )
         
-    def get_regions(self, cats : List[str] = {'brain', 'eye', 'muscle'}) -> Tuple[np.ndarray, np.ndarray, Dict[str, int]]:
+    def get_regions(self, cats : Tuple[str, ...] = ('brain', 'eye', 'muscle')) -> Tuple[np.ndarray, np.ndarray, Dict[str, int]]:
         """
         Return a tuple of generic region categories present in the leadfield's atlas
         as well as a list of unique regions with the respective counters.
@@ -402,7 +402,7 @@ class LeadField:
         if self.atlas is None:
             raise ValueError("No atlas available for this lead field")
         
-        allregions, _, _, = self.get_regions()
+        allregions, _, _ = self.get_regions()
         idx = np.zeros(len(self.atlas), dtype=bool)
         
         for region in region_patterns:
@@ -415,7 +415,7 @@ class LeadField:
             idx = idx | matches
         return np.nonzero(idx)[0]
     
-    def get_source_inradius(self, 
+    def get_source_inradius(self,
                             centre: Union[List[float], np.ndarray], 
                             radius: float, 
                             region: Union[List[str], np.ndarray, str] = '.*'
@@ -676,7 +676,7 @@ class LeadField:
         
         return int(source_idx)
     
-    def get_source_random(self, number: int = 1, region_patterns: List[str] = '.*') -> np.ndarray:
+    def get_source_random(self, number: int = 1, region_patterns: Union[List[str], str] = '.*') -> np.ndarray:
         
         region_idxs = self.get_source_all(region=region_patterns)
         if len(region_idxs) == 0:
