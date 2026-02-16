@@ -393,7 +393,7 @@ class LeadField:
         >>> # Get all sources in visual cortex
         >>> sources = lf.get_sources_in_region(['Visual_Cortex'])
         """
-        if (not isinstance(region_patterns, str)) and (not isinstance(region_patterns, np.ndarray)) and (not isinstance(region_patterns, list)):
+        if not any([isinstance(region_patterns, str), isinstance(region_patterns, np.ndarray), isinstance(region_patterns, list)]):
             raise ValueError("'region_patterns' attribute should be string, list or np.ndarray of strings.")
         if isinstance(region_patterns, str):
             region_patterns = [region_patterns]
@@ -675,6 +675,156 @@ class LeadField:
         source_idx, _ = self.get_source_nearest(middle_point, region=region)
         
         return int(source_idx)
+    
+    def get_source_spaced(self,
+                number: int,
+                spacing: float,
+                source_idx: Optional[Union[List[int], np.ndarray]] = None,
+                region: Union[List[str], np.ndarray, str] = '.*',
+                max_iterations: int = 1000) -> np.ndarray:
+        """
+        Get randomly spaced sources with minimum distance between them.
+        
+        Attempts to return a list of random source indices that are all at 
+        least an indicated distance away from each other. Uses an iterative
+        randomization approach to find a valid configuration.
+        
+        Note: It may take multiple iterations to find a solution. It may
+        also not be possible at all; in that case, try reducing the spacing
+        or the number of sources.
+        
+        Parameters
+        ----------
+        number : int
+            The number of sources to return
+        spacing : float
+            The minimum spacing between sources, in mm
+        source_idx : Optional[Union[List[int], np.ndarray]], optional
+            Source indices to be included in the final results. These must not
+            satisfy the spacing criterion among each other, but all randomly
+            added sources will be at least the indicated distance away from
+            these and each other. Default is None.
+        region : Union[List[str], np.ndarray, str], optional
+            Region pattern(s) to filter sources. Default '.*' matches all regions.
+            Can be a single pattern string, or list of patterns.
+        max_iterations : int, optional
+            Maximum number of randomization attempts before giving up.
+            Default is 1000.
+            
+        Returns
+        -------
+        np.ndarray
+            Array of shape (number,) containing the source indices of the
+            spaced sources
+            
+        Raises
+        ------
+        ValueError
+            If unable to find the requested number of spaced sources after
+            max_iterations attempts.
+            If requested sources are out of range.
+            
+        Examples
+        --------
+        >>> lf = lf_generate_from_nyhead()
+        >>> # Get 10 sources spaced at least 50mm apart
+        >>> sources = lf.get_source_spaced(10, 50)
+        >>> 
+        >>> # Get spaced sources in specific region
+        >>> sources = lf.get_source_spaced(5, 30, region='Brain.*Motor')
+        >>> 
+        >>> # Include specific sources and add more around them
+        >>> initial = [100, 200]
+        >>> sources = lf.get_source_spaced(10, 40, source_idx=initial)
+        >>> # Result will include indices 100 and 200, plus 8 more
+        
+        Notes
+        -----
+        The algorithm uses iterative randomization: it shuffles candidate sources
+        and sequentially adds them if they satisfy the spacing constraint. If it
+        cannot find enough sources in one pass, it re-randomizes and tries again.
+        
+        For better success rates:
+        - Reduce spacing value
+        - Reduce number of sources
+        - Use a larger region
+        - Ensure initial source_idx values are themselves well-spaced
+        """
+        if number < 1:
+            raise ValueError(f"Number must be at least 1, got {number}")
+        if spacing < 0:
+            raise ValueError(f"Spacing must be non-negative, got {spacing}")
+        
+        if source_idx is None:
+            initial_source_idx = np.array([], dtype=int)
+        else:
+            initial_source_idx = np.atleast_1d(source_idx).astype(int)
+            invalid = (initial_source_idx < 0) | (initial_source_idx >= self.n_sources)
+            if np.any(invalid):
+                warnings.warn(
+                    f"Some initial source indices are out of range [0, {self.n_sources}). "
+                    f"Removing invalid indices.")
+                initial_source_idx = initial_source_idx[~invalid]
+        
+        # here we get the sources in specified region(s)
+        region_idx = self.get_sources_in_region(region_patterns=region)
+        
+        if len(region_idx) == 0:
+            raise ValueError(f"No sources found in region(s): {region}")
+        
+        if len(region_idx) < number:
+            raise ValueError(
+                f"Requested {number} sources but only {len(region_idx)} available in region(s): {region}")
+        
+        # Helper function to initialize search
+        def _initialize_search(region_indices, initial_indices):
+            """Randomize sources and prepare for search."""
+            shuffled = region_indices[np.random.permutation(len(region_indices))]
+            
+            if len(initial_indices) == 0:
+                start_idx = 1
+            else:
+                mask = np.isin(shuffled, initial_indices)
+                shuffled = shuffled[~mask]
+                shuffled = np.concatenate([initial_indices, shuffled])
+                start_idx = len(initial_indices)
+            
+            return shuffled, start_idx
+        
+        iteration = 0
+        sources, next_idx = _initialize_search(region_idx, initial_source_idx)
+        selected_sources = list(initial_source_idx)
+        
+        while len(selected_sources) < number:
+            if iteration >= max_iterations:
+                raise ValueError(
+                    f"Could not find {number} sources with {spacing} mm spacing "
+                    f"after {max_iterations} iterations. Try reducing spacing or number "
+                    f"of sources, or increasing the region size.")
+            
+            candidate_idx = sources[next_idx]
+            candidate_pos = self.pos[candidate_idx]
+            
+            if len(selected_sources) > 0:
+                selected_positions = self.pos[selected_sources]  # (n_selected, 3)
+                distances = np.sqrt(np.sum((selected_positions - candidate_pos)**2, axis=1))
+                
+                if np.all(distances >= spacing):
+                    selected_sources.append(candidate_idx)
+            else:
+                selected_sources.append(candidate_idx)
+            
+            next_idx += 1
+            
+            if next_idx >= len(sources):
+                iteration += 1
+                warnings.warn(
+                    f"Could not find {number} sources with {spacing} mm spacing; "
+                    f"re-randomizing (iteration {iteration})...")
+                sources, next_idx = _initialize_search(region_idx, initial_source_idx)
+                selected_sources = list(initial_source_idx)
+        
+        return np.array(selected_sources, dtype=int)
     
     def get_source_random(self, number: int = 1, region_patterns: List[str] = '.*') -> np.ndarray:
         
