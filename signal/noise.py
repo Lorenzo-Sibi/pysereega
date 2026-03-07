@@ -433,7 +433,7 @@ class NoiseSignal(Signal):
     
     def plot_signal(self, srate: int, epoch_length: int,
                 show_deviations: bool=True, show_slopes: bool=True, baseonly: bool=False,
-                prestim: float=0, ax=None, colors=None, random_state=None):
+                prestim: float=0, ax=None, colors=None, random_state=None, **kwargs):
         """
         Plot noise signal with variability and slopes.
         
@@ -479,7 +479,6 @@ class NoiseSignal(Signal):
         if colors is None:
             colors = ['#1f77b4', '#d62728']  # Blue, Red
         
-        # Time vector
         n_samples = int(np.round(epoch_length / 1000 * srate))
         time = np.arange(n_samples) / srate * 1000
         if prestim > 0:
@@ -487,13 +486,11 @@ class NoiseSignal(Signal):
         
         rng = np.random.RandomState(random_state)
         
-        # Base signal (solid, first color)
+        # Base signal
         base = self._generate_colored_noise(n_samples, self.amplitude, rng)
-        ax.plot(time, base, '-', color=colors[0], linewidth=1.5, 
-                label='Base', alpha=0.8, zorder=5)
+        ax.plot(time, base, '-', color=colors[0], linewidth=1.5, label='Base', alpha=0.8, zorder=5)
         
         if not baseonly and show_deviations:
-            # Deviation envelope (dotted, first color)
             # Note: For noise, deviation is amplitude offset, not new noise generation
             ax.plot(time, base - self.amplitude_dv, ':', color=colors[0], 
                     linewidth=1.5, alpha=0.6, zorder=3)

@@ -7,8 +7,9 @@ this base class.
 """
 
 from abc import ABC, abstractmethod
-from typing import Optional, Dict, Any, Union
+from typing import List, Optional, Dict, Any, Union
 import numpy as np
+import matplotlib.pyplot as plt
 
 
 class Signal(ABC):
@@ -181,7 +182,322 @@ class Signal(ABC):
         return f"{self.__class__.__name__}(type='{self.signal_type}')"
 
 
+class SignalComposition(Signal):
+    """
+    Composite signal that combines multiple signals together.
+    
+    This class allows you to combine multiple Signal instances into a single
+    composite signal. The generate() method will generate each component signal
+    and sum them together to produce the final output.
+    
+    Parameters
+    ----------
+    signals : List[Signal]
+        List of Signal instances to combine
+        
+    Notes
+    -----
+    The composite signal will have the same variability as its components, but
+    the overall amplitude will be the sum of the component amplitudes.
+    """
+    def __init__(self, signals: List[Signal]):
+        super().__init__()
+        self.signals = signals
+        self._validate()
+        
+    def _validate(self):
+        for comp in self.signals:
+            if not isinstance(comp, Signal):
+                raise ValueError(f"All components must be instances of Signal, got {type(comp)}")
+        for comp in self.signals:
+            comp._validate()
+    
+    def generate(self, n_epochs, srate, onset = 0, baseonly = False, random_state = None):
+        """Generate signal epochs by summing component signals."""
+        generated_components = [comp.generate(n_epochs, srate, onset, baseonly, random_state) for comp in self.signals]
+        return np.sum(generated_components, axis=0)
+    
+    def get_amplitude_at(self, time: float, **kwargs) -> float:
+        """Get expected amplitude at a specific time by summing component amplitudes."""
+        return sum(comp.get_amplitude_at(time, **kwargs) for comp in self.signals)
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Serialize composite signal to dictionary."""
+        return {
+            'type': 'composite',
+            'components': [comp.to_dict() for comp in self.signals]
+        }
+        
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'SignalComposition':
+        """Deserialize composite signal from dictionary."""
+        if data['type'] != 'composite':
+            raise ValueError(f"Invalid type for SignalComposition: {data['type']}")
+        components = [Signal.from_dict(comp_data) for comp_data in data['components']]
+        return cls(components)
+    
+    def plot_signal(self, srate=500, epoch_length=1000, n_epochs=100,
+                show_deviations=True, show_slopes=True, baseonly=False,
+                prestim=0, ax=None, colors=None, random_state=None, **kwargs):
+        """
+        Plot composite signal as unified total (sum of all components).
+        
+        Shows:
+        - Base signal (sum, no variability)
+        - Deviation envelope (±1 SD from Monte Carlo)
+        - Final epoch with slopes (if applicable)
+        
+        Usage:
+            fig, ax = comp.plot_signal(show_deviations=True, show_slopes=True)
+        """
+        if ax is None:
+            fig, ax = plt.subplots(figsize=(12, 6))
+        else:
+            fig = ax.figure
+        
+        if colors is None:
+            colors = ['#2E86AB', '#A23B72']
+        
+        n_samples = int(np.round(epoch_length / 1000 * srate))
+        time = np.arange(n_samples) / srate * 1000
+        if prestim > 0:
+            time = time - prestim
+        
+        random_state = random_state if random_state is not None else 0
+        rng = np.random.RandomState(random_state)
+        
+        # Base signal (no variability)
+        base = np.zeros(n_samples)
+        for signal in self.signals:
+            base += signal.generate(1, srate, epoch_length, baseonly=True, random_state=rng)[0]
+        
+        ax.plot(time, base, '-', color=colors[0], linewidth=2.5, 
+                label='Base', zorder=5)
+        
+        if not baseonly and show_deviations:
+            # Monte Carlo: generate realizations to estimate variability 
+            # TODO: n_real could be a parameter 
+            # TODO: we could opptimize it by generating all components together rather than in a loop
+            n_real = 50
+            realizations = np.zeros((n_real, n_samples))
+            
+            for i in range(n_real):
+                epoch = np.zeros(n_samples)
+                for signal in self.signals:
+                    epoch += signal.generate(1, srate, epoch_length, baseonly=False)[0]
+                realizations[i] = epoch
+            
+            mean = realizations.mean(axis=0)
+            std = realizations.std(axis=0)
+            
+            ax.fill_between(time, mean - std, mean + std,
+                        color=colors[0], alpha=0.2, zorder=3,
+                        label='±1 SD')
+        
+        if not baseonly and show_slopes:
+            # has any component slpes?
+            has_slopes = any(
+                getattr(s, 'has_amp_slope', False) or 
+                getattr(s, 'has_lat_slope', False) or 
+                getattr(s, 'has_wid_slope', False)
+                for s in self.signals
+            )
+            
+            if has_slopes:
+                # Generate final epoch with slopes
+                final = np.zeros(n_samples)
+                
+                for signal in self.signals:
+                    if hasattr(signal, '_generate_peaks'):  # ERPSignal
+                        lats = signal.peak_latency + signal.peak_latency_slope
+                        wids = np.maximum(signal.peak_width + signal.peak_width_slope, 1.0)
+                        amps = signal.peak_amplitude + signal.peak_amplitude_slope
+                        final += signal._generate_peaks(time, lats, wids, amps)
+                        
+                    elif hasattr(signal, '_generate_colored_noise'):  # NoiseSignal
+                        if signal.has_amp_slope:
+                            final_amp = signal.amplitude + signal.amplitude_slope
+                            final += signal._generate_colored_noise(n_samples, final_amp, rng)
+                        else:
+                            final += signal.generate(1, srate, epoch_length, baseonly=True, random_state=rng)[0]
+                    else:
+                        final += signal.generate(1, srate, epoch_length, baseonly=True, random_state=rng)[0]
+                
+                ax.plot(time, final, '-', color=colors[1], linewidth=2.5,
+                    label='Final epoch', zorder=6)
+        
+        ax.axhline(0, color='k', linewidth=0.8, alpha=0.3)
+        ax.set_xlabel('Time (ms)', fontsize=11, fontweight='bold')
+        ax.set_ylabel('Amplitude (µV)', fontsize=11, fontweight='bold')
+        ax.set_title(f'Composite Signal ({len(self.signals)} components)', 
+                    fontsize=13, fontweight='bold')
+        ax.legend(loc='best', framealpha=0.95, fontsize=10)
+        ax.grid(True, alpha=0.3, linestyle='--', linewidth=0.5)
+        
+        fig.tight_layout()
+        return fig, ax
 
+    def plot_components(self, srate=500, epoch_length=1000, n_epochs=100,
+                        show_sum=True, show_deviations=False, prestim=0,
+                        figsize=(12, 10), random_state=None):
+        """
+        Plot each component in separate subplots.
+        
+        Shows:
+        - Each component individually (using their plot_signal method)
+        - Optional sum of all components
+        
+        Usage:
+            fig, axes = comp.plot_components(show_sum=True)
+        """
+        n_components = len(self.signals)
+        n_rows = n_components + (1 if show_sum else 0)
+        
+        fig, axes = plt.subplots(n_rows, 1, figsize=figsize, sharex=True)
+        if n_rows == 1:
+            axes = [axes]
+        
+        n_samples = int(np.round(epoch_length / 1000 * srate))
+        time = np.arange(n_samples) / srate * 1000
+        if prestim > 0:
+            time = time - prestim
+        
+        rng = np.random.RandomState(random_state if random_state is not None else 0)
+        colors = plt.cm.tab10(np.linspace(0, 0.9, n_components))
+        
+        total = np.zeros(n_samples)
+        
+        # Plot each component
+        for idx, (signal, ax) in enumerate(zip(self.signals, axes[:n_components])):
+            if hasattr(signal, 'plot_signal'):
+                signal.plot_signal(
+                    srate=srate,
+                    epoch_length=epoch_length,
+                    n_epochs=n_epochs,
+                    show_deviations=show_deviations,
+                    show_slopes=False,
+                    prestim=prestim,
+                    ax=ax,
+                    colors=[colors[idx], '#666666']
+                )
+            else:
+                component = signal.generate(1, srate, epoch_length, baseonly=True, random_state=rng)
+                ax.plot(time, component[0], color=colors[idx], linewidth=2)
+                ax.set_ylabel('Amplitude', fontsize=10)
+                ax.grid(True, alpha=0.3)
+            
+            signal_type = getattr(signal, 'signal_type', type(signal).__name__)
+            ax.set_title(f'Component {idx+1}: {signal_type}', 
+                        fontsize=11, fontweight='bold', loc='left')
+            
+            component = signal.generate(1, srate, epoch_length, baseonly=True, random_state=rng)
+            total += component[0]
+        
+        # Sum subplot
+        if show_sum:
+            ax_sum = axes[-1]
+            ax_sum.plot(time, total, color='#2E86AB', linewidth=2.5, label='Sum')
+            ax_sum.axhline(0, color='k', linewidth=0.8, alpha=0.3)
+            ax_sum.set_title('SUM of all components', fontsize=11, fontweight='bold', loc='left')
+            ax_sum.set_xlabel('Time (ms)', fontsize=11, fontweight='bold')
+            ax_sum.set_ylabel('Amplitude (µV)', fontsize=10)
+            ax_sum.grid(True, alpha=0.3)
+            ax_sum.legend()
+        
+        axes[-1].set_xlabel('Time (ms)', fontsize=11, fontweight='bold')
+        
+        fig.suptitle(f'Composite Signal: Component Breakdown ({n_components} signals)', 
+                    fontsize=14, fontweight='bold', y=0.995)
+        fig.tight_layout()
+        
+        return fig, axes
+
+    def plot_decomposition(self, srate=500, epoch_length=1000, n_epochs=100,
+                        show_individual=True, show_deviations=True, prestim=0,
+                        figsize=(14, 6), random_state=None):
+        """
+        Plot total signal + component decomposition side-by-side.
+        
+        Shows:
+        - Left panel: Total composite with deviations/slopes
+        - Right panel: Components stacked (with offset for visibility)
+        
+        Usage:
+            fig, (ax_total, ax_decomp) = comp.plot_decomposition()
+        """
+        if show_individual:
+            fig, (ax_total, ax_decomp) = plt.subplots(1, 2, figsize=figsize)
+        else:
+            fig, ax_total = plt.subplots(1, 1, figsize=(figsize[0]//2, figsize[1]))
+            ax_decomp = None
+        
+        # Left panel: Total
+        self.plot_signal(
+            srate=srate,
+            epoch_length=epoch_length,
+            n_epochs=n_epochs,
+            show_deviations=show_deviations,
+            show_slopes=True,
+            prestim=prestim,
+            ax=ax_total,
+            random_state=random_state
+        )
+        ax_total.set_title('A) Total Composite', fontsize=12, fontweight='bold', loc='left')
+        
+        # Right panel: Decomposition
+        if show_individual and ax_decomp is not None:
+            n_samples = int(np.round(epoch_length / 1000 * srate))
+            time = np.arange(n_samples) / srate * 1000
+            if prestim > 0:
+                time = time - prestim
+            
+            rng = np.random.RandomState(random_state)
+            colors = plt.cm.Set2(np.linspace(0, 0.9, len(self.signals)))
+            
+            components = []
+            labels = []
+            
+            for idx, signal in enumerate(self.signals):
+                component = signal.generate(1, srate, epoch_length, baseonly=True, random_state=rng)
+                components.append(component[0])
+                
+                signal_type = getattr(signal, 'signal_type', type(signal).__name__)
+                labels.append(f"{signal_type} #{idx+1}")
+            
+            # Stacked plot with offset
+            offset = 0
+            max_amp = max(np.abs(c).max() for c in components)
+            spacing = max_amp * 1.5
+            
+            for idx, (component, label) in enumerate(zip(components, labels)):
+                y = component + offset
+                ax_decomp.plot(time, y, color=colors[idx], linewidth=2, 
+                            label=label, alpha=0.8)
+                ax_decomp.axhline(offset, color='gray', linestyle=':', 
+                                linewidth=0.8, alpha=0.3)
+                offset -= spacing
+            
+            ax_decomp.set_xlabel('Time (ms)', fontsize=11, fontweight='bold')
+            ax_decomp.set_ylabel('Amplitude (µV)', fontsize=11, fontweight='bold')
+            ax_decomp.set_title('B) Components (stacked)', fontsize=12, fontweight='bold', loc='left')
+            ax_decomp.legend(loc='upper right', framealpha=0.95, fontsize=9)
+            ax_decomp.grid(True, alpha=0.3, linestyle='--', linewidth=0.5)
+            ax_decomp.set_yticks([])  # Stacked plots have arbitrary offset
+        
+        fig.suptitle(f'Composite Signal Analysis ({len(self.signals)} components)', 
+                    fontsize=14, fontweight='bold')
+        fig.tight_layout()
+        
+        if show_individual:
+            return fig, (ax_total, ax_decomp)
+        else:
+            return fig, ax_total
+        
+    @property
+    def signal_type(self) -> str:
+        """Return signal type identifier."""
+        return 'composite'
+    
 """
 MATLAB structure for Noise signal definition.
 

@@ -310,7 +310,7 @@ class ERPSignal(Signal):
             "(still deciding how to handle variability in this method)")
     
     def plot_signal(self, srate: float, epoch_length: float, baseonly: bool = False, show_deviations=True, show_slopes=True,
-                prestim=0, ax=None, colors=None):
+                prestim=0, ax=None, colors=None, **kwargs):
         """
         Plot ERP signal with variability and slopes for a single epoch (base) and final epoch (slopes)
         
